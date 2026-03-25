@@ -1,0 +1,1655 @@
+import { useState, useRef, useCallback, useEffect } from "react";
+
+const PINGCAP_CONTEXT = `
+You are an expert field marketing manager at PingCAP, helping generate comprehensive event briefs for the NA region.
+
+## PingCAP / TiDB Core Messaging:
+- TiDB is a distributed SQL database that scales horizontally to hundreds of nodes, PBs of data
+- Key value props: horizontal scalability, strong consistency, ACID transactions, MySQL compatibility
+- Use cases: Modernize MySQL workloads, Build cloud-native apps, Enable Operational Intelligence (HTAP)
+- Notable customers: Databricks, Airbnb, Pinterest, Plaid, Square, LinkedIn, PayPay
+- Pitching versions by audience:
+  - Non-technical: "scales out without sharding headaches, high availability"
+  - Technical: "NoSQL scalability + relational consistency, ACID, SQL interface"
+  - Database pros: "horizontal scalability + elasticity of NoSQL + strong consistency + ACID + SQL of RDBMS"
+
+## Historical Event Reference (Google Cloud Next '25):
+- Event Type: Tier 1 Conference (32,000+ attendees), April 9-11, 2025, Las Vegas
+- Booth: #1211, Mandalay Bay Convention Center
+- Staffing: ~5 staff per shift, 2-hour rotating shifts, Field Marketing Manager always present
+- Staff roster: Estyn C., Scott E., Kyle C., Loc T., Yash C., Stephen T., Li S., Yuchen D. (FM)
+- Booth activities: Ti mascot stuffed toy swag, NFC card giveaways, Raffle on final day
+- Ancillary event: Breakfast networking event (morning of last day, 8-10 AM)
+- Dress code: HTAP Summit T-shirt + 1024 Jacket
+- Lead scanning: 3 dedicated devices (for SE/AE leads), 2 shared devices at booth
+- Leads scan questions used for qualification
+- Key messaging focus: MySQL modernization, cloud-native apps, operational intelligence
+- Resources: Event Hub landing page, pitching deck, KBYG deck
+- Follow-up: Lead routing to sales post-event
+
+## Standard Event Brief Sections to Generate:
+1. Event Overview (name, date, location, audience, tier)
+2. Strategic Goals & KPIs (pipeline targets, MQL goals, brand impressions)
+3. Key Messaging & Positioning (tailored to event audience)
+4. Booth Activities & Swag Plan
+5. Staffing Plan (shift structure, roles, headcount recommendation)
+6. Ancillary Events
+7. Lead Capture & Qualification Strategy
+8. Resources & Collateral Checklist
+9. Follow-up Strategy
+10. Budget Estimate
+
+Always output the brief in clean markdown with clear section headers. Be specific, actionable, and grounded in PingCAP's real positioning.
+`;
+
+const SAMPLE_EVENTS = [
+  { name: "AWS re:Invent 2025", type: "Tier 1 Conference", audience: "Cloud architects, developers, DevOps", notes: "50,000+ attendees, Las Vegas, December" },
+  { name: "KubeCon NA 2025", type: "Tier 1 Conference", audience: "Cloud-native developers, platform engineers, Kubernetes users", notes: "12,000+ attendees, DevOps/K8s focus" },
+  { name: "Databricks Data + AI Summit", type: "Tier 2 Partner Event", audience: "Data engineers, ML practitioners, analytics teams", notes: "Major strategic partner overlap" },
+];
+
+function Spinner() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "12px", color: "var(--accent)" }}>
+      <div className="spinner" />
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", letterSpacing: "0.05em" }}>Generating brief...</span>
+    </div>
+  );
+}
+
+function MarkdownRenderer({ content }) {
+  const html = content
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/^(?!<[hul])/gm, '')
+    .split('\n').map(line => line.trim() ? line : '<br/>').join('\n');
+
+  return <div className="markdown-output" dangerouslySetInnerHTML={{ __html: `<p>${html}</p>` }} />;
+}
+
+export default function EventBriefAutopilot() {
+  const [step, setStep] = useState("input");
+  const [inputMode, setInputMode] = useState("form");
+  const [formData, setFormData] = useState({
+    eventName: "",
+    eventType: "Tier 1 Conference",
+    eventDate: "",
+    location: "",
+    estimatedAttendees: "",
+    audienceProfile: "",
+    boothSize: "",
+    sponsorshipLevel: "",
+    prospectusText: "",
+    additionalNotes: "",
+  });
+  const [brief, setBrief] = useState("");
+  const [error, setError] = useState("");
+  const [exporting, setExporting] = useState("");
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
+  const briefRef = useRef(null);
+
+  const [boothDays, setBoothDays] = useState([
+    { date: "", openTime: "09:00", closeTime: "17:00" }
+  ]);
+  const [staffMembers, setStaffMembers] = useState([
+    { name: "", role: "AE" },
+    { name: "", role: "SE" },
+    { name: "", role: "MKT" },
+  ]);
+  const [staffOnRest, setStaffOnRest] = useState(1);
+  const [loaded, setLoaded] = useState(false);
+
+  // ── Restore saved state on mount ──
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get("eventbrief_formstate");
+        if (r && r.value) {
+          const saved = JSON.parse(r.value);
+          if (saved.formData) setFormData(saved.formData);
+          if (saved.boothDays) setBoothDays(saved.boothDays);
+          if (saved.staffMembers) setStaffMembers(saved.staffMembers);
+          if (typeof saved.staffOnRest === "number") setStaffOnRest(saved.staffOnRest);
+        }
+      } catch (_) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  // ── Save state whenever inputs change ──
+  useEffect(() => {
+    if (!loaded) return;
+    const save = async () => {
+      try {
+        await window.storage.set("eventbrief_formstate", JSON.stringify({
+          formData, boothDays, staffMembers, staffOnRest
+        }));
+      } catch (_) {}
+    };
+    const t = setTimeout(save, 600);
+    return () => clearTimeout(t);
+  }, [formData, boothDays, staffMembers, staffOnRest, loaded]);
+
+  const handleSample = (sample) => {
+    setFormData(prev => ({
+      ...prev,
+      eventName: sample.name,
+      eventType: sample.type,
+      audienceProfile: sample.audience,
+      additionalNotes: sample.notes,
+    }));
+    setInputMode("form");
+  };
+
+  const processFile = useCallback((file) => {
+    if (!file) return;
+    const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"];
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!allowed.includes(file.type) && !["pdf","docx","doc"].includes(ext)) {
+      setError("Please upload a PDF or Word document (.pdf, .docx, .doc)");
+      return;
+    }
+    setError("");
+    setUploadStatus("reading");
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = e.target.result.split(",")[1];
+      const mediaType = file.type === "application/pdf" || ext === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      setUploadedFile({ name: file.name, base64, mediaType });
+      setUploadStatus("ready");
+      // Auto-fill event name if empty
+      if (!formData.eventName) {
+        const guessed = file.name.replace(/\.(pdf|docx|doc)$/i, "").replace(/[-_]/g, " ");
+        setFormData(p => ({ ...p, eventName: guessed }));
+      }
+    };
+    reader.readAsDataURL(file);
+  }, [formData.eventName]);
+
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
+  };
+
+  // Staffing helpers
+  const addDay = () => setBoothDays(d => [...d, { date: "", openTime: "09:00", closeTime: "17:00" }]);
+  const removeDay = (i) => setBoothDays(d => d.filter((_, idx) => idx !== i));
+  const updateDay = (i, field, val) => setBoothDays(d => d.map((day, idx) => idx === i ? { ...day, [field]: val } : day));
+
+  const addStaff = () => setStaffMembers(s => [...s, { name: "", role: "AE" }]);
+  const removeStaff = (i) => setStaffMembers(s => s.filter((_, idx) => idx !== i));
+  const updateStaff = (i, field, val) => setStaffMembers(s => s.map((m, idx) => idx === i ? { ...m, [field]: val } : m));
+
+  const buildStaffingContext = () => {
+    const validStaff = staffMembers.filter(m => m.name.trim());
+    if (!validStaff.length && !boothDays.some(d => d.date)) return "";
+
+    const daysText = boothDays.filter(d => d.date || d.openTime).map(d =>
+      `  - ${d.date || "Day TBD"}: ${d.openTime} – ${d.closeTime}`
+    ).join("\n");
+
+    const staffText = validStaff.map(m => `  - ${m.name} (${m.role})`).join("\n");
+
+    const totalStaff = validStaff.length;
+    const activePerShift = totalStaff - staffOnRest;
+
+    return `
+**Booth Hours:**
+${daysText || "  - TBD"}
+
+**Confirmed Booth Staff (${totalStaff} total):**
+${staffText || "  - TBD"}
+
+**Shift Scheduling Rules:**
+- 2-hour rotating shifts
+- ${activePerShift} staff active per shift, ${staffOnRest} staff on rest per shift
+- Must have at minimum: 1 AE, 1 SE, and 1 MKT member present at all times
+- Field Marketing Manager (MKT) is always present at the booth
+
+Please generate the complete shift schedule as part of Section 5 (Staffing Plan). Create a detailed shift table for each day showing exactly who is on duty and who is on rest for each 2-hour block. Ensure every shift has at least 1 AE, 1 SE, and 1 MKT. Rotate staff fairly. Format as a clear markdown table with columns: Time Slot | On Duty | On Rest.`;
+  };
+
+  const buildPrompt = (extractedText = "") => {
+    const f = formData;
+    const staffingCtx = buildStaffingContext();
+    return `Generate a comprehensive PingCAP event brief for the following event:
+
+**Event Name:** ${f.eventName}
+**Event Type / Tier:** ${f.eventType}
+**Date:** ${f.eventDate || "TBD"}
+**Location:** ${f.location || "TBD"}
+**Estimated Attendees:** ${f.estimatedAttendees || "Unknown"}
+**Audience Profile:** ${f.audienceProfile}
+**Booth Size:** ${f.boothSize || "Standard"}
+**Sponsorship Level:** ${f.sponsorshipLevel || "Standard"}
+
+${extractedText ? `**Prospectus / Event Details (extracted from uploaded file):**\n${extractedText}\n` : ""}
+${f.prospectusText ? `**Prospectus / Event Details:**\n${f.prospectusText}\n` : ""}
+${staffingCtx ? `${staffingCtx}\n` : ""}
+${f.additionalNotes ? `**Additional Notes:**\n${f.additionalNotes}\n` : ""}
+
+Please generate a full, detailed event brief with all 10 standard sections. Be specific about staffing numbers, shift structure, messaging tailored to this audience, and actionable KPIs. Use the Google Cloud Next '25 event as a reference baseline for tier 1 conferences.`;
+  };
+
+  const generateBrief = async () => {
+    if (!formData.eventName && !uploadedFile) {
+      setError("Please fill in an Event Name or upload a prospectus file.");
+      return;
+    }
+    if (!formData.eventName) {
+      setError("Please fill in the Event Name.");
+      return;
+    }
+    setError("");
+    setStep("generating");
+
+    try {
+      let messages;
+
+      if (uploadedFile && uploadedFile.mediaType === "application/pdf") {
+        // Send PDF directly — Claude can read it natively
+        messages = [{
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: { type: "base64", media_type: "application/pdf", data: uploadedFile.base64 }
+            },
+            { type: "text", text: buildPrompt() }
+          ]
+        }];
+      } else if (uploadedFile) {
+        // For DOCX: first extract text via Claude, then generate brief
+        const extractResp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 4000,
+            messages: [{
+              role: "user",
+              content: [
+                {
+                  type: "document",
+                  source: { type: "base64", media_type: uploadedFile.mediaType, data: uploadedFile.base64 }
+                },
+                { type: "text", text: "Extract and return all the text content from this document. Return only the raw text, no commentary." }
+              ]
+            }]
+          })
+        });
+        const extractData = await extractResp.json();
+        if (extractData.error) throw new Error(extractData.error.message);
+        const extractedText = extractData.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
+        messages = [{ role: "user", content: buildPrompt(extractedText) }];
+      } else {
+        messages = [{ role: "user", content: buildPrompt() }];
+      }
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          system: PINGCAP_CONTEXT,
+          messages,
+        }),
+      });
+
+      const data = await response.json();
+
+      // Surface API errors clearly instead of showing blank brief
+      if (data.error) {
+        setError(`API error: ${data.error.message || JSON.stringify(data.error)}`);
+        setStep("input");
+        return;
+      }
+      if (!response.ok) {
+        setError(`Request failed (${response.status}): ${JSON.stringify(data)}`);
+        setStep("input");
+        return;
+      }
+
+      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
+
+      if (!text.trim()) {
+        setError("Received an empty response. Please try again.");
+        setStep("input");
+        return;
+      }
+
+      setBrief(text);
+      setStep("result");
+      setTimeout(() => briefRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+    } catch (err) {
+      setError("Failed to generate brief. Please try again.");
+      setStep("input");
+    }
+  };
+
+  const copyBrief = () => {
+    navigator.clipboard.writeText(brief);
+  };
+
+  // ── RTF helpers ──
+  const rtfEsc = (str) => {
+    if (!str) return "";
+    let out = "";
+    for (const ch of str) {
+      if (ch === "\\") { out += "\\\\"; }
+      else if (ch === "{") { out += "\\{"; }
+      else if (ch === "}") { out += "\\}"; }
+      else if (ch.charCodeAt(0) > 127) { out += `\\u${ch.charCodeAt(0)}?`; }
+      else { out += ch; }
+    }
+    return out;
+  };
+
+  // Parse inline markdown (**bold**, *italic*, `code`) into RTF safely
+  const inlineRtf = (str) => {
+    if (!str) return "";
+    let result = "";
+    let i = 0;
+    while (i < str.length) {
+      // bold **...**
+      if (str[i] === "*" && str[i + 1] === "*") {
+        const end = str.indexOf("**", i + 2);
+        if (end !== -1) {
+          result += `{\\b ${rtfEsc(str.slice(i + 2, end))}}`;
+          i = end + 2;
+          continue;
+        }
+      }
+      // italic *...*
+      if (str[i] === "*") {
+        const end = str.indexOf("*", i + 1);
+        if (end !== -1) {
+          result += `{\\i ${rtfEsc(str.slice(i + 1, end))}}`;
+          i = end + 1;
+          continue;
+        }
+      }
+      // code `...`
+      if (str[i] === "`") {
+        const end = str.indexOf("`", i + 1);
+        if (end !== -1) {
+          result += `{\\f1\\fs20 ${rtfEsc(str.slice(i + 1, end))}}`;
+          i = end + 1;
+          continue;
+        }
+      }
+      // plain text — collect until next special char
+      let j = i + 1;
+      while (j < str.length && str[j] !== "*" && str[j] !== "`") j++;
+      result += rtfEsc(str.slice(i, j));
+      i = j;
+    }
+    return result;
+  };
+
+  // ── Export full brief as .rtf ──
+  const exportDocx = () => {
+    setExporting("docx");
+    try {
+      const lines = brief.split("\n");
+      const parts = [];
+
+      // RTF document header
+      parts.push("{\\rtf1\\ansi\\ansicpg1252\\deff0");
+      parts.push("{\\fonttbl{\\f0\\froman\\fcharset0 Georgia;}{\\f1\\fmodern\\fcharset0 Courier New;}}");
+      parts.push("{\\colortbl ;\\red59\\green130\\blue246;\\red80\\green80\\blue80;}");
+      parts.push("\\paperw12240\\paperh15840\\margl1800\\margr1800\\margt1440\\margb1440\\widowctrl");
+
+      // Cover title
+      const title = rtfEsc(formData.eventName || "Event");
+      parts.push(`\\pard\\sb480\\sa120\\qc{\\f0\\fs48\\b\\cf1 ${title}}\\par`);
+      parts.push(`\\pard\\sb0\\sa80\\qc{\\f0\\fs24\\cf2 PingCAP NA Field Marketing \\'b7 Event Brief}\\par`);
+      const dateStr = rtfEsc(new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }));
+      parts.push(`\\pard\\sb0\\sa320\\qc{\\f0\\fs20\\cf2 Generated ${dateStr}}\\par`);
+      parts.push(`\\pard\\brdrb\\brdrs\\brdrw15\\brdrsh\\brdrcf1\\sb0\\sa0 \\par`);
+
+      for (const rawLine of lines) {
+        const line = rawLine.trimEnd();
+
+        if (line.startsWith("### ")) {
+          parts.push(`\\pard\\sb200\\sa60{\\f0\\fs22\\b\\cf2 ${inlineRtf(line.slice(4))}}\\par`);
+        } else if (line.startsWith("## ")) {
+          parts.push(`\\pard\\sb280\\sa80{\\f0\\fs28\\b\\cf1 ${inlineRtf(line.slice(3))}}\\par`);
+        } else if (line.startsWith("# ")) {
+          parts.push(`\\pard\\sb360\\sa100\\brdrb\\brdrs\\brdrw8\\brdrcf1{\\f0\\fs36\\b\\cf1 ${inlineRtf(line.slice(2))}}\\par`);
+        } else if (line.startsWith("- ") || line.startsWith("* ")) {
+          parts.push(`\\pard\\fi-300\\li600\\sb40\\sa40{\\f0\\fs22 \\'b7  ${inlineRtf(line.slice(2))}}\\par`);
+        } else if (/^\d+\.\s/.test(line)) {
+          const num = line.match(/^(\d+)/)[1];
+          const rest = line.replace(/^\d+\.\s*/, "");
+          parts.push(`\\pard\\fi-300\\li600\\sb40\\sa40{\\f0\\fs22 ${rtfEsc(num)}.  ${inlineRtf(rest)}}\\par`);
+        } else if (line.startsWith("|")) {
+          // Table row
+          const cells = line.split("|").map(c => c.trim()).filter(Boolean);
+          // Skip separator rows like |---|---|
+          if (cells.every(c => /^[-: ]+$/.test(c))) continue;
+          const colWidth = 2600;
+          // Build trowd definition
+          let trowd = `\\trowd\\trgaph80\\trleft0`;
+          cells.forEach((_, idx) => { trowd += `\\clbrdrt\\brdrs\\brdrw5\\clbrdrb\\brdrs\\brdrw5\\clbrdrl\\brdrs\\brdrw5\\clbrdrr\\brdrs\\brdrw5\\cellx${(idx + 1) * colWidth}`; });
+          parts.push(trowd);
+          cells.forEach(c => {
+            parts.push(`\\pard\\intbl\\sb60\\sa60\\sl240\\slmult1 {\\f0\\fs20 ${inlineRtf(c)}}\\cell`);
+          });
+          parts.push("\\row");
+        } else if (line.trim() === "") {
+          parts.push("\\pard\\sb0\\sa0\\par");
+        } else {
+          parts.push(`\\pard\\sb60\\sa60\\sl280\\slmult1{\\f0\\fs22 ${inlineRtf(line)}}\\par`);
+        }
+      }
+
+      parts.push("}");
+
+      const rtfContent = parts.join("\n");
+      const blob = new Blob([rtfContent], { type: "application/rtf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(formData.eventName || "Event").replace(/[^a-z0-9]/gi, "_")}_Event_Brief.rtf`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 200);
+    } catch (e) {
+      alert("RTF export failed: " + e.message);
+    }
+    setExporting("");
+  };
+
+  // ── Parse AI-generated shift table from brief markdown ──
+  const parseShiftTable = () => {
+    const rows = [];
+    const lines = brief.split("\n");
+    let inTable = false;
+    let isFirstRow = true;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!inTable && t.startsWith("|") && /time|shift|slot/i.test(t)) {
+        inTable = true;
+        isFirstRow = true;
+        continue; // skip header row
+      }
+      if (!inTable) continue;
+      if (!t.startsWith("|")) { inTable = false; continue; }
+      if (/^\|[\s\-:|]+\|$/.test(t)) continue; // separator
+      if (isFirstRow) { isFirstRow = false; continue; }
+      const cells = t.split("|").map(c => c.trim()).filter(Boolean);
+      if (cells.length >= 2) rows.push(cells);
+    }
+    return rows;
+  };
+
+  // ── Export shift schedule as .xlsx matching exact reference format ──
+  const exportXlsx = () => {
+    setExporting("xlsx");
+
+    const doExport = (XLSX) => {
+      try {
+        const wb = XLSX.utils.book_new();
+        const validStaff = staffMembers.filter(m => m.name.trim());
+        const validDays = boothDays.filter(d => d.date || d.openTime);
+
+        // ── Build shift schedule with smart rotation ──
+        // Each shift: who is on duty (rest people simply absent from row)
+        // Guarantee: always ≥1 AE, ≥1 SE, ≥1 MKT on duty
+        const roleCount = {};
+        validStaff.forEach(m => { roleCount[m.role] = (roleCount[m.role] || 0) + 1; });
+
+        const allShifts = [];
+        let globalShiftIdx = 0;
+
+        for (const day of validDays) {
+          const [openH, openM] = day.openTime.split(":").map(Number);
+          const [closeH, closeM] = day.closeTime.split(":").map(Number);
+          const totalMins = (closeH * 60 + closeM) - (openH * 60 + openM);
+          const numShifts = Math.ceil(totalMins / 120);
+
+          for (let s = 0; s < numShifts; s++) {
+            const startM = openH * 60 + openM + s * 120;
+            const endM = Math.min(startM + 120, closeH * 60 + closeM);
+            const fmt = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+            // Rotate rest candidates, but never leave a role uncovered
+            const resting = new Set();
+            let candidateStart = globalShiftIdx % Math.max(validStaff.length, 1);
+
+            for (let attempt = 0; attempt < validStaff.length && resting.size < staffOnRest; attempt++) {
+              const idx = (candidateStart + attempt) % validStaff.length;
+              const member = validStaff[idx];
+              const alreadyRestingOfRole = validStaff.filter((m, i) => resting.has(i) && m.role === member.role).length;
+              const remainingOfRole = (roleCount[member.role] || 0) - alreadyRestingOfRole - 1;
+              if (remainingOfRole >= 1) {
+                resting.add(idx);
+              }
+            }
+
+            const onDuty = validStaff.filter((_, i) => !resting.has(i));
+
+            allShifts.push({
+              date: day.date || "TBD",
+              startTime: fmt(startM),
+              endTime: fmt(endM),
+              onDuty: onDuty.map(m => m.name),
+            });
+            globalShiftIdx++;
+          }
+        }
+
+        // ── Build sheet rows ──
+        const maxOnDuty = Math.max(...allShifts.map(s => s.onDuty.length), 1);
+        const headers = [
+          "Date", "Start Time", "End Time",
+          ...Array.from({ length: maxOnDuty }, (_, i) => `Booth Staff #${i + 1}`),
+        ];
+
+        const sheetRows = [headers];
+        const merges = [];
+        let rowIdx = 1; // row 0 = headers
+
+        // Group by date preserving order
+        const seen = [];
+        const byDate = {};
+        for (const sh of allShifts) {
+          if (!byDate[sh.date]) { byDate[sh.date] = []; seen.push(sh.date); }
+          byDate[sh.date].push(sh);
+        }
+
+        for (const date of seen) {
+          const shifts = byDate[date];
+          const startRow = rowIdx;
+
+          for (let i = 0; i < shifts.length; i++) {
+            const sh = shifts[i];
+            const row = [
+              i === 0 ? sh.date : "",
+              sh.startTime,
+              sh.endTime,
+              ...sh.onDuty,
+            ];
+            while (row.length < headers.length) row.push("");
+            sheetRows.push(row);
+            rowIdx++;
+          }
+
+          // Merge date cell vertically across all shifts for this day
+          if (shifts.length > 1) {
+            merges.push({ s: { r: startRow, c: 0 }, e: { r: rowIdx - 1, c: 0 } });
+          }
+        }
+
+        // Footer note row
+        sheetRows.push([]);
+        const noteRow = rowIdx + 1;
+        sheetRows.push([`Please follow the Booth Duty Guidelines for ${formData.eventName || "this event"}`]);
+        merges.push({ s: { r: noteRow, c: 0 }, e: { r: noteRow, c: headers.length - 1 } });
+
+        const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+        ws["!merges"] = merges;
+        ws["!cols"] = [
+          { wch: 14 },  // Date
+          { wch: 13 },  // Start Time
+          { wch: 13 },  // End Time
+          ...Array.from({ length: maxOnDuty }, () => ({ wch: 17 })),
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws, "Booth Duty Shift");
+        XLSX.writeFile(wb, `${(formData.eventName || "Event").replace(/[^a-z0-9]/gi, "_")}_Booth_Duty_Shift.xlsx`);
+      } catch (e) {
+        alert("Excel export failed: " + e.message);
+      }
+      setExporting("");
+    };
+
+    if (window.XLSX) {
+      doExport(window.XLSX);
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+      script.onload = () => doExport(window.XLSX);
+      script.onerror = () => { alert("Could not load Excel library. Check your connection."); setExporting(""); };
+      document.head.appendChild(script);
+    }
+  };
+
+  const reset = () => {
+    setStep("input");
+    setBrief("");
+    setUploadedFile(null);
+    setUploadStatus("");
+    const blank = {
+      eventName: "", eventType: "Tier 1 Conference", eventDate: "", location: "",
+      estimatedAttendees: "", audienceProfile: "", boothSize: "", sponsorshipLevel: "",
+      prospectusText: "", additionalNotes: "",
+    };
+    setFormData(blank);
+    setBoothDays([{ date: "", openTime: "09:00", closeTime: "17:00" }]);
+    setStaffMembers([{ name: "", role: "AE" }, { name: "", role: "SE" }, { name: "", role: "MKT" }]);
+    setStaffOnRest(1);
+    try { window.storage.delete("eventbrief_formstate"); } catch (_) {}
+  };
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=Lora:ital,wght@0,400;0,500;1,400&display=swap');
+
+        :root {
+          --bg: #0a0c10;
+          --surface: #111318;
+          --surface2: #181c24;
+          --border: #232830;
+          --border-bright: #2e3540;
+          --text: #e8eaf0;
+          --text-muted: #7a8394;
+          --accent: #3b82f6;
+          --accent-dim: rgba(59,130,246,0.12);
+          --accent-glow: rgba(59,130,246,0.25);
+          --green: #22d3a0;
+          --green-dim: rgba(34,211,160,0.1);
+          --font-display: 'Syne', sans-serif;
+          --font-body: 'Lora', serif;
+          --font-mono: 'DM Mono', monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
+
+        .app {
+          min-height: 100vh;
+          background: var(--bg);
+          background-image: 
+            radial-gradient(ellipse 80% 50% at 50% -20%, rgba(249,115,22,0.08) 0%, transparent 60%),
+            radial-gradient(ellipse 40% 30% at 80% 80%, rgba(34,211,160,0.04) 0%, transparent 50%);
+        }
+
+        .header {
+          padding: 40px 48px 32px;
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          align-items: center;
+          gap: 20px;
+        }
+
+        .logo-mark {
+          width: 44px; height: 44px;
+          background: linear-gradient(135deg, var(--accent), #60a5fa);
+          border-radius: 10px;
+          display: flex; align-items: center; justify-content: center;
+          font-family: var(--font-display);
+          font-weight: 800; font-size: 20px;
+          color: white;
+          box-shadow: 0 0 24px var(--accent-glow);
+        }
+
+        .header-text h1 {
+          font-family: var(--font-display);
+          font-size: 32px; font-weight: 800;
+          letter-spacing: -0.02em;
+          color: var(--text);
+        }
+
+        .header-text p {
+          font-family: var(--font-mono);
+          font-size: 11px; color: var(--text-muted);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-top: 2px;
+        }
+
+        .badge {
+          margin-left: auto;
+          background: var(--accent-dim);
+          border: 1px solid rgba(249,115,22,0.3);
+          color: var(--accent);
+          font-family: var(--font-mono);
+          font-size: 10px;
+          padding: 4px 10px;
+          border-radius: 20px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+        }
+
+        .main { max-width: 900px; margin: 0 auto; padding: 48px 48px; }
+
+        .section-label {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          letter-spacing: 0.15em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          margin-bottom: 16px;
+          display: flex; align-items: center; gap: 8px;
+        }
+
+        .section-label::after {
+          content: '';
+          flex: 1;
+          height: 1px;
+          background: var(--border);
+        }
+
+        .mode-tabs {
+          display: flex; gap: 4px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          padding: 4px;
+          margin-bottom: 32px;
+          width: fit-content;
+        }
+
+        .mode-tab {
+          padding: 8px 18px;
+          border-radius: 7px;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.2s;
+          letter-spacing: 0.03em;
+        }
+
+        .mode-tab.active {
+          background: var(--accent);
+          color: white;
+          box-shadow: 0 2px 12px var(--accent-glow);
+        }
+
+        .sample-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 12px;
+          margin-bottom: 32px;
+        }
+
+        .sample-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 16px;
+          cursor: pointer;
+          transition: all 0.2s;
+          text-align: left;
+        }
+
+        .sample-card:hover {
+          border-color: var(--accent);
+          background: var(--accent-dim);
+          transform: translateY(-1px);
+        }
+
+        .sample-card h4 {
+          font-family: var(--font-display);
+          font-size: 13px; font-weight: 700;
+          color: var(--text);
+          margin-bottom: 6px;
+        }
+
+        .sample-card .tag {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          color: var(--accent);
+          background: var(--accent-dim);
+          padding: 2px 8px;
+          border-radius: 4px;
+          display: inline-block;
+          margin-bottom: 8px;
+        }
+
+        .sample-card p {
+          font-size: 12px;
+          color: var(--text-muted);
+          line-height: 1.5;
+        }
+
+        .form-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-bottom: 16px;
+        }
+
+        .form-group {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .form-group.full { grid-column: 1 / -1; }
+
+        label {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+
+        input, select, textarea {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text);
+          font-family: var(--font-body);
+          font-size: 14px;
+          padding: 10px 14px;
+          outline: none;
+          transition: border-color 0.2s, box-shadow 0.2s;
+          width: 100%;
+        }
+
+        input:focus, select:focus, textarea:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 0 3px var(--accent-dim);
+        }
+
+        select { cursor: pointer; }
+
+        textarea { resize: vertical; min-height: 100px; line-height: 1.6; }
+
+        .generate-btn {
+          width: 100%;
+          padding: 16px;
+          background: linear-gradient(135deg, var(--accent), #60a5fa);
+          border: none;
+          border-radius: 10px;
+          color: white;
+          font-family: var(--font-display);
+          font-size: 16px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+          cursor: pointer;
+          margin-top: 24px;
+          box-shadow: 0 4px 24px var(--accent-glow);
+          transition: all 0.2s;
+        }
+
+        .generate-btn:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 32px var(--accent-glow);
+        }
+
+        .generate-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .error {
+          background: rgba(239,68,68,0.1);
+          border: 1px solid rgba(239,68,68,0.3);
+          color: #fca5a5;
+          padding: 12px 16px;
+          border-radius: 8px;
+          font-family: var(--font-mono);
+          font-size: 13px;
+          margin-top: 12px;
+        }
+
+        .generating-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          min-height: 400px;
+          gap: 24px;
+        }
+
+        .generating-state h2 {
+          font-family: var(--font-display);
+          font-size: 28px;
+          font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.02em;
+        }
+
+        .generating-state p {
+          color: var(--text-muted);
+          font-size: 14px;
+        }
+
+        .pulse-ring {
+          width: 80px; height: 80px;
+          border: 2px solid var(--accent);
+          border-radius: 50%;
+          animation: pulse 1.5s ease-in-out infinite;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 32px;
+        }
+
+        @keyframes pulse {
+          0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 var(--accent-glow); }
+          50% { transform: scale(1.08); opacity: 0.8; box-shadow: 0 0 0 16px transparent; }
+        }
+
+        .spinner {
+          width: 20px; height: 20px;
+          border: 2px solid var(--border);
+          border-top-color: var(--accent);
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .result-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 32px;
+          padding-bottom: 20px;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .result-title {
+          font-family: var(--font-display);
+          font-size: 26px;
+          font-weight: 800;
+          letter-spacing: -0.02em;
+        }
+
+        .result-title span { color: var(--accent); }
+
+        .result-actions { display: flex; gap: 10px; }
+
+        .btn-ghost {
+          padding: 9px 18px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text-muted);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.2s;
+          letter-spacing: 0.03em;
+        }
+
+        .btn-ghost:hover {
+          border-color: var(--border-bright);
+          color: var(--text);
+        }
+
+        .btn-primary {
+          padding: 9px 18px;
+          background: var(--green-dim);
+          border: 1px solid rgba(34,211,160,0.3);
+          border-radius: 8px;
+          color: var(--green);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.2s;
+          letter-spacing: 0.03em;
+        }
+
+        .btn-primary:hover {
+          background: rgba(34,211,160,0.18);
+        }
+
+        .brief-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          padding: 40px;
+          animation: fadeIn 0.4s ease;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(12px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        .markdown-output h1 {
+          font-family: var(--font-display);
+          font-size: 22px; font-weight: 800;
+          color: var(--text);
+          margin: 28px 0 12px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid var(--border);
+          letter-spacing: -0.02em;
+        }
+
+        .markdown-output h2 {
+          font-family: var(--font-display);
+          font-size: 17px; font-weight: 700;
+          color: var(--accent);
+          margin: 22px 0 10px;
+          letter-spacing: -0.01em;
+        }
+
+        .markdown-output h3 {
+          font-family: var(--font-mono);
+          font-size: 12px; font-weight: 500;
+          color: var(--green);
+          margin: 16px 0 8px;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+
+        .markdown-output p {
+          font-size: 14px; line-height: 1.75;
+          color: var(--text);
+          margin-bottom: 10px;
+        }
+
+        .markdown-output ul {
+          padding-left: 20px;
+          margin-bottom: 12px;
+        }
+
+        .markdown-output li {
+          font-size: 14px; line-height: 1.7;
+          color: var(--text);
+          margin-bottom: 4px;
+        }
+
+        .markdown-output strong {
+          color: var(--text);
+          font-weight: 600;
+        }
+
+        .context-note {
+          background: var(--surface2);
+          border: 1px solid var(--border);
+          border-left: 3px solid var(--accent);
+          border-radius: 8px;
+          padding: 16px 20px;
+          margin-bottom: 32px;
+          font-family: var(--font-mono);
+          font-size: 12px;
+          color: var(--text-muted);
+          line-height: 1.6;
+        }
+
+        .context-note strong { color: var(--accent); }
+
+        .dropzone {
+          border: 2px dashed var(--border-bright);
+          border-radius: 12px;
+          padding: 40px 24px;
+          text-align: center;
+          cursor: pointer;
+          transition: all 0.2s;
+          background: var(--surface);
+          min-height: 160px;
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          gap: 8px;
+        }
+
+        .dropzone:hover, .dropzone.dragover {
+          border-color: var(--accent);
+          background: var(--accent-dim);
+        }
+
+        .dropzone.ready {
+          border-color: var(--green);
+          border-style: solid;
+          background: var(--green-dim);
+        }
+
+        .drop-icon { font-size: 36px; line-height: 1; }
+
+        .drop-title {
+          font-family: var(--font-display);
+          font-size: 15px; font-weight: 700;
+          color: var(--text);
+        }
+
+        .drop-sub {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--text-muted);
+          letter-spacing: 0.04em;
+        }
+
+        /* Staffing Planner */
+        .staffing-panel {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          padding: 28px;
+          margin-top: 32px;
+        }
+
+        .staffing-panel-header {
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 24px;
+        }
+
+        .staffing-panel-title {
+          font-family: var(--font-display);
+          font-size: 16px; font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.01em;
+          display: flex; align-items: center; gap: 8px;
+        }
+
+        .staffing-panel-title .icon {
+          background: var(--accent-dim);
+          border: 1px solid rgba(249,115,22,0.25);
+          border-radius: 6px;
+          width: 28px; height: 28px;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 14px;
+        }
+
+        .btn-add {
+          padding: 6px 14px;
+          background: var(--surface2);
+          border: 1px solid var(--border-bright);
+          border-radius: 6px;
+          color: var(--text-muted);
+          font-family: var(--font-mono);
+          font-size: 11px;
+          cursor: pointer;
+          transition: all 0.2s;
+          letter-spacing: 0.04em;
+        }
+
+        .btn-add:hover { border-color: var(--accent); color: var(--accent); }
+
+        .btn-remove {
+          width: 28px; height: 28px;
+          background: transparent;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          color: var(--text-muted);
+          font-size: 14px;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .btn-remove:hover { border-color: #ef4444; color: #ef4444; }
+
+        .day-row {
+          display: grid;
+          grid-template-columns: 1fr 110px 110px 28px;
+          gap: 10px;
+          align-items: end;
+          margin-bottom: 10px;
+        }
+
+        .staff-row {
+          display: grid;
+          grid-template-columns: 1fr 120px 28px;
+          gap: 10px;
+          align-items: end;
+          margin-bottom: 10px;
+        }
+
+        .role-badge {
+          display: inline-block;
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-family: var(--font-mono);
+          font-size: 10px;
+          font-weight: 500;
+          letter-spacing: 0.06em;
+        }
+
+        .role-badge.AE { background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.3); }
+        .role-badge.SE { background: rgba(34,211,160,0.12); color: var(--green); border: 1px solid rgba(34,211,160,0.3); }
+        .role-badge.MKT { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(249,115,22,0.3); }
+
+        .rest-control {
+          display: flex; align-items: center; gap: 16px;
+          background: var(--surface2);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          padding: 14px 18px;
+          margin-top: 20px;
+        }
+
+        .rest-control-label {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--text-muted);
+          letter-spacing: 0.05em;
+          flex: 1;
+          line-height: 1.5;
+        }
+
+        .rest-checkboxes { display: flex; gap: 8px; }
+
+        .rest-checkbox-btn {
+          width: 36px; height: 36px;
+          border-radius: 8px;
+          border: 1px solid var(--border-bright);
+          background: var(--surface);
+          color: var(--text-muted);
+          font-family: var(--font-mono);
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s;
+          display: flex; align-items: center; justify-content: center;
+        }
+
+        .rest-checkbox-btn.selected {
+          background: var(--accent);
+          border-color: var(--accent);
+          color: white;
+          box-shadow: 0 2px 10px var(--accent-glow);
+        }
+
+        .coverage-warning {
+          background: rgba(234,179,8,0.08);
+          border: 1px solid rgba(234,179,8,0.25);
+          border-radius: 8px;
+          padding: 10px 14px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: #fde047;
+          margin-top: 12px;
+          line-height: 1.5;
+        }
+
+        .coverage-ok {
+          background: var(--green-dim);
+          border: 1px solid rgba(34,211,160,0.2);
+          border-radius: 8px;
+          padding: 10px 14px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--green);
+          margin-top: 12px;
+        }
+
+        .sub-section-label {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          margin-bottom: 12px;
+          margin-top: 20px;
+        }
+
+        /* Export Panel */
+        .export-panel {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          padding: 18px 22px;
+          margin-bottom: 24px;
+        }
+
+        .export-panel-label {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          letter-spacing: 0.15em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          white-space: nowrap;
+          padding-right: 16px;
+          border-right: 1px solid var(--border);
+        }
+
+        .export-buttons {
+          display: flex;
+          gap: 12px;
+          flex: 1;
+          flex-wrap: wrap;
+        }
+
+        .export-btn {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 18px;
+          border-radius: 10px;
+          border: 1px solid var(--border);
+          background: var(--surface2);
+          cursor: pointer;
+          transition: all 0.2s;
+          text-align: left;
+          flex: 1;
+          min-width: 200px;
+        }
+
+        .export-btn:hover:not(:disabled) { transform: translateY(-1px); }
+        .export-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .export-btn-doc {
+          border-color: rgba(59,130,246,0.3);
+        }
+        .export-btn-doc:hover:not(:disabled) {
+          background: rgba(59,130,246,0.08);
+          border-color: rgba(59,130,246,0.5);
+          box-shadow: 0 4px 16px rgba(59,130,246,0.12);
+        }
+
+        .export-btn-xl {
+          border-color: rgba(34,197,94,0.3);
+        }
+        .export-btn-xl:hover:not(:disabled) {
+          background: rgba(34,197,94,0.08);
+          border-color: rgba(34,197,94,0.5);
+          box-shadow: 0 4px 16px rgba(34,197,94,0.12);
+        }
+
+        .export-icon { font-size: 24px; line-height: 1; flex-shrink: 0; }
+
+        .export-btn-title {
+          font-family: var(--font-display);
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.01em;
+        }
+
+        .export-btn-sub {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          color: var(--text-muted);
+          margin-top: 2px;
+          letter-spacing: 0.03em;
+        }
+      `}</style>
+
+      <div className="app">
+        <header className="header">
+          <div className="logo-mark">P</div>
+          <div className="header-text">
+            <h1>Event Brief Autopilot</h1>
+            <p>PingCAP · NA Field Marketing</p>
+          </div>
+          <div className="badge">AI-Powered</div>
+        </header>
+
+        <main className="main">
+          {step === "input" && (
+            <>
+              <div className="context-note">
+                <strong>Context loaded:</strong> Google Cloud Next '25 brief, booth shift schedule, pitching guide, and TiDB messaging framework are all embedded as reference. Your generated briefs will be grounded in real PingCAP event history.
+              </div>
+
+              {/* Quick-fill from sample events */}
+              <div className="section-label">Quick-fill from sample event</div>
+              <div className="sample-grid">
+                {SAMPLE_EVENTS.map(s => (
+                  <button key={s.name} className="sample-card" onClick={() => handleSample(s)}>
+                    <div className="tag">{s.type}</div>
+                    <h4>{s.name}</h4>
+                    <p>{s.notes}</p>
+                  </button>
+                ))}
+              </div>
+
+              {/* Event Details — always visible */}
+              <div className="section-label">Event Details</div>
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Event Name *</label>
+                  <input value={formData.eventName} onChange={e => setFormData(p => ({...p, eventName: e.target.value}))} placeholder="e.g. AWS re:Invent 2025" />
+                </div>
+                <div className="form-group">
+                  <label>Event Type</label>
+                  <select value={formData.eventType} onChange={e => setFormData(p => ({...p, eventType: e.target.value}))}>
+                    <option>Tier 1 Conference</option>
+                    <option>Tier 2 Conference</option>
+                    <option>Partner Event</option>
+                    <option>Field Event</option>
+                    <option>Roundtable / Executive Dinner</option>
+                    <option>Webinar / Virtual</option>
+                    <option>Meetup / Community</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Event Date</label>
+                  <input value={formData.eventDate} onChange={e => setFormData(p => ({...p, eventDate: e.target.value}))} placeholder="e.g. June 3–5, 2025" />
+                </div>
+                <div className="form-group">
+                  <label>Location</label>
+                  <input value={formData.location} onChange={e => setFormData(p => ({...p, location: e.target.value}))} placeholder="e.g. Las Vegas, NV" />
+                </div>
+                <div className="form-group">
+                  <label>Estimated Attendees</label>
+                  <input value={formData.estimatedAttendees} onChange={e => setFormData(p => ({...p, estimatedAttendees: e.target.value}))} placeholder="e.g. 30,000+" />
+                </div>
+                <div className="form-group">
+                  <label>Sponsorship Level</label>
+                  <select value={formData.sponsorshipLevel} onChange={e => setFormData(p => ({...p, sponsorshipLevel: e.target.value}))}>
+                    <option value="">Select...</option>
+                    <option>Exhibitor / Standard Booth</option>
+                    <option>Silver Sponsor</option>
+                    <option>Gold Sponsor</option>
+                    <option>Platinum Sponsor</option>
+                    <option>Title Sponsor</option>
+                    <option>Community / Free</option>
+                  </select>
+                </div>
+                <div className="form-group full">
+                  <label>Audience Profile *</label>
+                  <input value={formData.audienceProfile} onChange={e => setFormData(p => ({...p, audienceProfile: e.target.value}))} placeholder="e.g. Cloud architects, backend engineers, DBAs, CTOs from mid-market SaaS companies" />
+                </div>
+                <div className="form-group">
+                  <label>Booth Size</label>
+                  <select value={formData.boothSize} onChange={e => setFormData(p => ({...p, boothSize: e.target.value}))}>
+                    <option value="">Select...</option>
+                    <option>10x10</option>
+                    <option>10x20</option>
+                    <option>20x20</option>
+                    <option>20x30</option>
+                    <option>30x30+</option>
+                    <option>Tabletop</option>
+                    <option>No booth</option>
+                  </select>
+                </div>
+                <div className="form-group full">
+                  <label>Additional Notes / Context</label>
+                  <textarea rows={3} value={formData.additionalNotes} onChange={e => setFormData(p => ({...p, additionalNotes: e.target.value}))} placeholder="Any special requirements, partner co-marketing, key accounts to target, themes to emphasize..." />
+                </div>
+              </div>
+
+              {/* Prospectus Upload — always visible as optional */}
+              <div className="section-label" style={{marginTop: "24px"}}>Upload Prospectus (optional)</div>
+              <div
+                className={`dropzone ${dragOver ? "dragover" : ""} ${uploadStatus === "ready" ? "ready" : ""}`}
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleFileDrop}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc"
+                  style={{ display: "none" }}
+                  onChange={e => processFile(e.target.files[0])}
+                />
+                {uploadStatus === "" && (
+                  <>
+                    <div className="drop-icon">📄</div>
+                    <div className="drop-title">Drop your prospectus here</div>
+                    <div className="drop-sub">or click to browse — PDF, .docx, .doc supported</div>
+                  </>
+                )}
+                {uploadStatus === "reading" && (
+                  <>
+                    <div className="drop-icon">⏳</div>
+                    <div className="drop-title">Reading file...</div>
+                  </>
+                )}
+                {uploadStatus === "ready" && (
+                  <>
+                    <div className="drop-icon">✅</div>
+                    <div className="drop-title">{uploadedFile.name}</div>
+                    <div className="drop-sub">File ready · click to replace</div>
+                  </>
+                )}
+              </div>
+
+              {error && <div className="error">{error}</div>}
+
+              {/* Booth Hours & Staffing Planner — always shown */}
+              {(() => {
+                const validStaff = staffMembers.filter(m => m.name.trim());
+                const totalActive = validStaff.length - staffOnRest;
+                const byRole = role => validStaff.filter(m => m.role === role).length;
+                const aeCount = byRole("AE"), seCount = byRole("SE"), mktCount = byRole("MKT");
+                // Check if removing staffOnRest people can still guarantee 1 AE + 1 SE + 1 MKT
+                const minRequired = 3; // 1 AE + 1 SE + 1 MKT minimum
+                const coverageOk = validStaff.length > 0 && totalActive >= minRequired && aeCount >= 1 && seCount >= 1 && mktCount >= 1;
+                const coverageWarn = validStaff.length > 0 && (!coverageOk);
+
+                return (
+                  <div className="staffing-panel">
+                    <div className="staffing-panel-header">
+                      <div className="staffing-panel-title">
+                        <div className="icon">🗓️</div>
+                        Booth Hours &amp; Staffing Plan
+                      </div>
+                    </div>
+
+                    {/* Booth Days */}
+                    <div className="sub-section-label">Expo / Booth Hours by Day</div>
+                    {boothDays.map((day, i) => (
+                      <div key={i} className="day-row">
+                        <div className="form-group">
+                          {i === 0 && <label>Date</label>}
+                          <input type="date" value={day.date} onChange={e => updateDay(i, "date", e.target.value)} />
+                        </div>
+                        <div className="form-group">
+                          {i === 0 && <label>Open</label>}
+                          <input type="time" value={day.openTime} onChange={e => updateDay(i, "openTime", e.target.value)} />
+                        </div>
+                        <div className="form-group">
+                          {i === 0 && <label>Close</label>}
+                          <input type="time" value={day.closeTime} onChange={e => updateDay(i, "closeTime", e.target.value)} />
+                        </div>
+                        <button className="btn-remove" onClick={() => removeDay(i)} title="Remove day" style={{ marginTop: i === 0 ? "22px" : "0" }}>×</button>
+                      </div>
+                    ))}
+                    <button className="btn-add" onClick={addDay}>+ Add Day</button>
+
+                    {/* Staff Members */}
+                    <div className="sub-section-label" style={{ marginTop: "24px" }}>Confirmed Booth Staff</div>
+                    {staffMembers.map((member, i) => (
+                      <div key={i} className="staff-row">
+                        <div className="form-group">
+                          {i === 0 && <label>Name</label>}
+                          <input value={member.name} onChange={e => updateStaff(i, "name", e.target.value)} placeholder={`Staff member ${i + 1}`} />
+                        </div>
+                        <div className="form-group">
+                          {i === 0 && <label>Department</label>}
+                          <select value={member.role} onChange={e => updateStaff(i, "role", e.target.value)}>
+                            <option value="AE">AE</option>
+                            <option value="SE">SE</option>
+                            <option value="MKT">MKT</option>
+                          </select>
+                        </div>
+                        <button className="btn-remove" onClick={() => removeStaff(i)} title="Remove" style={{ marginTop: i === 0 ? "22px" : "0" }}>×</button>
+                      </div>
+                    ))}
+                    <button className="btn-add" onClick={addStaff}>+ Add Staff</button>
+
+                    {/* Rest slots */}
+                    <div className="rest-control">
+                      <div className="rest-control-label">
+                        <strong style={{ color: "var(--text)", display: "block", marginBottom: "2px" }}>Staff on rest per shift</strong>
+                        How many people can take a break during each 2-hour shift block
+                      </div>
+                      <div className="rest-checkboxes">
+                        {[1, 2].map(n => (
+                          <button key={n} className={`rest-checkbox-btn ${staffOnRest === n ? "selected" : ""}`} onClick={() => setStaffOnRest(n)}>{n}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Coverage check */}
+                    {validStaff.length > 0 && (
+                      coverageOk
+                        ? <div className="coverage-ok">✓ Coverage looks good — {totalActive} active per shift with {aeCount} AE, {seCount} SE, {mktCount} MKT available</div>
+                        : <div className="coverage-warning">⚠ With {staffOnRest} on rest, only {totalActive} active staff. Add more staff or reduce rest count to guarantee 1 AE + 1 SE + 1 MKT per shift.</div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              <button className="generate-btn" onClick={generateBrief} disabled={step === "generating"}>
+                ⚡ Generate Event Brief
+              </button>
+            </>
+          )}
+
+          {step === "generating" && (
+            <div className="generating-state">
+              <div className="pulse-ring">📋</div>
+              <h2>Building your brief...</h2>
+              <p>Pulling from PingCAP historical data and TiDB messaging framework</p>
+              <Spinner />
+            </div>
+          )}
+
+          {step === "result" && (
+            <div ref={briefRef}>
+              <div className="result-header">
+                <div className="result-title">
+                  Brief for <span>{formData.eventName}</span>
+                </div>
+                <div className="result-actions">
+                  <button className="btn-ghost" onClick={() => { setStep("input"); setInputMode("form"); }}>← Edit Inputs</button>
+                  <button className="btn-ghost" onClick={reset} title="Clear all fields and start fresh">Clear & New</button>
+                  <button className="btn-ghost" onClick={copyBrief}>Copy MD</button>
+                </div>
+              </div>
+
+              {/* Export Panel */}
+              <div className="export-panel">
+                <div className="export-panel-label">Export</div>
+                <div className="export-buttons">
+                  <button className="export-btn export-btn-doc" onClick={exportDocx} disabled={!!exporting}>
+                    <span className="export-icon">📄</span>
+                    <div className="export-btn-text">
+                      <div className="export-btn-title">{exporting === "docx" ? "Generating…" : "Full Event Brief"}</div>
+                      <div className="export-btn-sub">Download as Word Doc (.rtf) · opens in Word & Google Docs</div>
+                    </div>
+                  </button>
+                  <button className="export-btn export-btn-xl" onClick={exportXlsx} disabled={!!exporting}>
+                    <span className="export-icon">📊</span>
+                    <div className="export-btn-text">
+                      <div className="export-btn-title">{exporting === "xlsx" ? "Generating…" : "Booth Shift Schedule"}</div>
+                      <div className="export-btn-sub">Download as Excel (.xlsx) · 3 sheets</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              <div className="brief-card">
+                <MarkdownRenderer content={brief} />
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </>
+  );
+}
