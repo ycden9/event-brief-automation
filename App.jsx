@@ -273,7 +273,7 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
         // For DOCX: first extract text via Claude, then generate brief
         const extractResp = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-sonnet-4-20250514",
             max_tokens: 4000,
@@ -299,7 +299,7 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
 
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 4000,
@@ -409,7 +409,7 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
       // RTF document header
       parts.push("{\\rtf1\\ansi\\ansicpg1252\\deff0");
       parts.push("{\\fonttbl{\\f0\\froman\\fcharset0 Georgia;}{\\f1\\fmodern\\fcharset0 Courier New;}}");
-      parts.push("{\\colortbl ;\\red200\\green75\\blue0;\\red80\\green80\\blue80;}");
+      parts.push("{\\colortbl ;\\red59\\green130\\blue246;\\red80\\green80\\blue80;}");
       parts.push("\\paperw12240\\paperh15840\\margl1800\\margr1800\\margt1440\\margb1440\\widowctrl");
 
       // Cover title
@@ -658,9 +658,9 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
           --border-bright: #2e3540;
           --text: #e8eaf0;
           --text-muted: #7a8394;
-          --accent: #f97316;
-          --accent-dim: rgba(249,115,22,0.12);
-          --accent-glow: rgba(249,115,22,0.25);
+          --accent: #3b82f6;
+          --accent-dim: rgba(59,130,246,0.12);
+          --accent-glow: rgba(59,130,246,0.25);
           --green: #22d3a0;
           --green-dim: rgba(34,211,160,0.1);
           --font-display: 'Syne', sans-serif;
@@ -690,7 +690,7 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
 
         .logo-mark {
           width: 44px; height: 44px;
-          background: linear-gradient(135deg, var(--accent), #fb923c);
+          background: linear-gradient(135deg, var(--accent), #60a5fa);
           border-radius: 10px;
           display: flex; align-items: center; justify-content: center;
           font-family: var(--font-display);
@@ -870,7 +870,7 @@ Please generate a full, detailed event brief with all 10 standard sections. Be s
         .generate-btn {
           width: 100%;
           padding: 16px;
-          background: linear-gradient(135deg, var(--accent), #fb923c);
+          background: linear-gradient(135deg, var(--accent), #60a5fa);
           border: none;
           border-radius: 10px;
           color: white;
